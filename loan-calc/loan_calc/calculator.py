@@ -226,8 +226,7 @@ def summary(
 
     Known issue:
         `last_emi` currently computes the month *after* the final EMI due to how
-        the end date is derived from `tenure_months`. This is preserved for
-        backward compatibility; fix separately if required.
+        the end date is derived from `tenure_months`.
     """
     start = start or date.today()
     e = emi(principal, annual_rate, tenure_months)
