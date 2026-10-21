@@ -96,11 +96,12 @@ Default currency code used by `summary()` output.
   - `principal_part = instalment - interest`
   - `balance = balance - principal_part`
 
-**Important implementation notes / quirks:**
-- The loop is `for month in range(1, tenure_months):`, which iterates **up to `tenure_months - 1`**.  
-  That means the schedule contains **`tenure_months - 1` rows**, not `tenure_months`.
-- There is code intended to special-case the last month (`if month == tenure_months:`) to clear remaining balance, but due to the loop range it never triggers.
-- Result: the schedule likely omits the final payment row, and the balance may not end at exactly 0.
+**Important implementation notes / quirks (bugfix):**
+- The loop must include the final month, so it is now:
+  - `for month in range(1, tenure_months + 1):`
+- In Python, `range(1, tenure_months)` stops one short (it ends at `tenure_months - 1`), so a 12-month loan would produce only 11 rows.
+- Because of that off-by-one, the `if month == tenure_months:` branch (meant to handle the final payment and clear the remaining balance) could never run, which is a strong sign the loop bound was wrong.
+- With the corrected bound, the schedule produces exactly `tenure_months` rows and the final-month adjustment logic can execute as intended.
 
 ---
 
