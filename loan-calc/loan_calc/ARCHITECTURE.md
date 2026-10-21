@@ -18,11 +18,17 @@ Default currency code used by `summary()` output.
 - `annual_rate`: Annual interest rate expressed as a percent (e.g., `10` for 10% p.a.).
 
 **Returns:**
-- Monthly rate as a decimal, rounded to **4** decimal places.
-  - Example: `annual_rate=12` → `0.01` (since `12/1200 = 0.01`)
+- Monthly rate as a decimal fraction.
 
-**Notes:**
-- This rounding affects all downstream calculations that call `_monthly_rate()` (EMI, amortisation schedules, eligibility).
+**Current implementation details (bugfix):**
+- The monthly rate is now computed without rounding:
+  - `r = annual_rate / 1200`
+
+**Why this change was necessary:**
+- Rounding the monthly rate (e.g., to 4 decimals) throws away precision early in the calculation pipeline.
+- EMI computations are sensitive to small changes in the periodic rate, especially over long tenures; even a tiny rate bump compounds via `(1 + r) ** tenure_months`.
+- Example: 10.5% p.a. should yield a monthly rate of exactly 0.00875, but rounding to 0.0088 inflates the rate and produces a noticeably higher EMI/interest.
+- Correct approach: keep full precision for rates and only round final currency amounts (EMI, interest, balances) to 2 decimals for display/output.
 
 ---
 

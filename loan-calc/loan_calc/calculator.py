@@ -6,7 +6,7 @@ DEFAULT_CURRENCY = "INR"
 
 
 def _monthly_rate(annual_rate):
-    r = round(annual_rate / 1200, 4)
+    r = annual_rate / 1200
     return r
 
 
