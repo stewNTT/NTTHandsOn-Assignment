@@ -131,23 +131,26 @@ Default currency code used by `summary()` output.
 
 **Inputs:**
 - `balance`: outstanding principal
-- `annual_rate`: interest rate (expected percent, based on other functions)
+- `annual_rate`: interest rate in percent (e.g., `10.5` for 10.5% p.a.)
 - `instalment`: fixed monthly payment amount
 
 **Returns:**
 - Remaining months as an integer (ceiled).
 
-**Logic:**
+**Logic (bugfix):**
 - If `balance <= 0`: returns `0`.
-- Computes `r = annual_rate / 100`.
+- Uses the **monthly** rate (to match EMI/amortisation math and monthly compounding):
+  - `r = annual_rate / 1200`
 - If `r == 0`: returns `ceil(balance / instalment)`.
 - Ensures instalment is large enough to amortize the loan:
-  - If `instalment <= balance * r` → raises `ValueError`.
-- Uses a logarithmic rearrangement of the amortization formula to solve for `n`.
+  - If `instalment <= balance * r` → raises `ValueError("instalment too small to repay the loan")`.
+- Uses a logarithmic rearrangement of the amortization formula to solve for the number of months `n`:
+  - `n = -log(1 - balance * r / instalment) / log(1 + r)`
 
-**Important note (unit consistency):**
-- This function uses `annual_rate / 100` (annual decimal), not the monthly rate from `_monthly_rate()`.  
-  That means it treats `r` as if it were a per-period rate, but it is not monthly here. This can cause inaccurate results unless the caller already passes a monthly rate (which they do not in this module).
+**Why this change was necessary:**
+- `remaining_tenure()` solves for the number of **months** left, so the interest rate used in the formula must be the **per-month** rate.
+- Using `annual_rate / 100` incorrectly treats the annual rate as if it were a monthly rate, massively overstating interest per period and producing incorrect (often much longer or impossible) tenures.
+- Aligning `remaining_tenure()` with `_monthly_rate()` keeps all repayment computations on the same unit basis (monthly).
 
 ---
 
