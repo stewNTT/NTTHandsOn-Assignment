@@ -2,6 +2,12 @@ import math
 from datetime import date
 from typing import Any, Dict, List, Optional, TypedDict
 
+from .exceptions import (
+    InsufficientInstalmentError,
+    InvalidInputError,
+    PrepaymentError,
+)
+
 
 DEFAULT_CURRENCY = "INR"
 
@@ -18,18 +24,27 @@ def emi(principal: float, annual_rate: float, tenure_months: int) -> float:
     Args:
         principal: Loan amount (must be > 0).
         annual_rate: Annual interest rate as a percent (e.g. 10.5 for 10.5% p.a.).
+            0% is allowed, negative rates are rejected.
         tenure_months: Loan tenure in months (must be > 0).
 
     Returns:
         Monthly EMI amount, rounded to 2 decimals.
 
     Raises:
-        ValueError: If `principal` or `tenure_months` is not positive.
+        InvalidInputError: For invalid principal, rate, or tenure.
     """
+    if not isinstance(tenure_months, int):
+        raise InvalidInputError("tenure_months must be an int")
     if tenure_months <= 0:
-        raise ValueError("tenure must be positive")
+        raise InvalidInputError("tenure_months must be positive")
+    if not isinstance(principal, (int, float)):
+        raise InvalidInputError("principal must be a number")
     if principal <= 0:
-        raise ValueError("principal must be positive")
+        raise InvalidInputError("principal must be positive")
+    if not isinstance(annual_rate, (int, float)):
+        raise InvalidInputError("annual_rate must be a number")
+    if annual_rate < 0:
+        raise InvalidInputError("annual_rate cannot be negative")
     r = _monthly_rate(annual_rate)
     if r == 0:
         return round(principal / tenure_months, 2)
@@ -38,12 +53,20 @@ def emi(principal: float, annual_rate: float, tenure_months: int) -> float:
 
 
 def total_payment(principal: float, annual_rate: float, tenure_months: int) -> float:
-    """Compute total repayment amount over the full tenure (principal + interest)."""
+    """Compute total repayment amount over the full tenure (principal + interest).
+
+    Raises:
+        InvalidInputError: For invalid principal, rate, or tenure.
+    """
     return round(emi(principal, annual_rate, tenure_months) * tenure_months, 2)
 
 
 def total_interest(principal: float, annual_rate: float, tenure_months: int) -> float:
-    """Compute total interest payable over the full tenure."""
+    """Compute total interest payable over the full tenure.
+
+    Raises:
+        InvalidInputError: For invalid principal, rate, or tenure.
+    """
     return round(total_payment(principal, annual_rate, tenure_months) - principal, 2)
 
 
@@ -61,7 +84,12 @@ def amortisation_schedule(
     """Build the amortisation schedule as a list of month-by-month rows.
 
     Each row contains: month, emi, interest, principal, balance.
+
+    Raises:
+        InvalidInputError: For invalid principal, rate, or tenure.
     """
+    # Validate through EMI, ensuring consistent rules everywhere.
+    _ = emi(principal, annual_rate, tenure_months)
     r = _monthly_rate(annual_rate)
     instalment = emi(principal, annual_rate, tenure_months)
     balance = principal
@@ -90,7 +118,15 @@ def amortisation_schedule(
 def outstanding_after(
     principal: float, annual_rate: float, tenure_months: int, months_paid: int
 ) -> float:
-    """Return outstanding balance after `months_paid` EMIs have been paid."""
+    """Return outstanding balance after `months_paid` EMIs have been paid.
+
+    Raises:
+        InvalidInputError: For invalid loan inputs or months_paid.
+    """
+    # Validate loan inputs
+    _ = emi(principal, annual_rate, tenure_months)
+    if not isinstance(months_paid, int):
+        raise InvalidInputError("months_paid must be an int")
     if months_paid <= 0:
         return round(principal, 2)
     sched = amortisation_schedule(principal, annual_rate, tenure_months)
@@ -104,22 +140,34 @@ def remaining_tenure(balance: float, annual_rate: float, instalment: float) -> i
 
     Args:
         balance: Outstanding principal.
-        annual_rate: Annual interest rate as a percent.
+        annual_rate: Annual interest rate as a percent (0 allowed).
         instalment: Fixed EMI amount.
 
     Returns:
         Remaining number of months (ceiled).
 
     Raises:
-        ValueError: If the instalment is too small to amortize the loan.
+        InvalidInputError: For invalid balance/rate/instalment.
+        InsufficientInstalmentError: If the instalment is too small to amortize the loan.
     """
+    if not isinstance(balance, (int, float)):
+        raise InvalidInputError("balance must be a number")
+    if not isinstance(annual_rate, (int, float)):
+        raise InvalidInputError("annual_rate must be a number")
+    if annual_rate < 0:
+        raise InvalidInputError("annual_rate cannot be negative")
+    if not isinstance(instalment, (int, float)):
+        raise InvalidInputError("instalment must be a number")
+    if instalment <= 0:
+        raise InvalidInputError("instalment must be positive")
+
     r = annual_rate / 1200
     if balance <= 0:
         return 0
     if r == 0:
         return math.ceil(balance / instalment)
     if instalment <= balance * r:
-        raise ValueError("instalment too small to repay the loan")
+        raise InsufficientInstalmentError("instalment too small to repay the loan")
     n = -math.log(1 - balance * r / instalment) / math.log(1 + r)
     return math.ceil(n)
 
@@ -131,10 +179,25 @@ def prepayment_savings(
     prepay_month: int,
     prepay_amount: float,
 ) -> Dict[str, Any]:
-    """Compute tenure/interest savings from a lump-sum prepayment while keeping EMI."""
+    """Compute tenure/interest savings from a lump-sum prepayment while keeping EMI.
+
+    Raises:
+        InvalidInputError: For invalid loan inputs.
+        PrepaymentError: For invalid prepayment month/amount.
+    """
     instalment = emi(principal, annual_rate, tenure_months)
+    if not isinstance(prepay_month, int):
+        raise PrepaymentError("prepay_month must be an int")
+    if prepay_month <= 0 or prepay_month > tenure_months:
+        raise PrepaymentError("prepay_month must be within 1..tenure_months")
+    if not isinstance(prepay_amount, (int, float)):
+        raise PrepaymentError("prepay_amount must be a number")
+    if prepay_amount <= 0:
+        raise PrepaymentError("prepay_amount must be positive")
     sched = amortisation_schedule(principal, annual_rate, tenure_months)
     balance = sched[prepay_month - 1]["balance"]
+    if prepay_amount > balance:
+        raise PrepaymentError("prepay_amount exceeds outstanding balance")
     new_balance = balance - prepay_amount
     if new_balance <= 0:
         months_left = 0
@@ -155,9 +218,24 @@ def prepayment_savings(
 
 
 def compare_offers(principal: float, offers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Compare loan offers and return them sorted by total cost ascending."""
+    """Compare loan offers and return them sorted by total cost ascending.
+
+    Raises:
+        InvalidInputError: For invalid principal or offers structure.
+    """
+    if not isinstance(principal, (int, float)):
+        raise InvalidInputError("principal must be a number")
+    if principal <= 0:
+        raise InvalidInputError("principal must be positive")
+    if not isinstance(offers, list):
+        raise InvalidInputError("offers must be a list of dicts")
     out: List[Dict[str, Any]] = []
     for o in offers:
+        if not isinstance(o, dict):
+            raise InvalidInputError("each offer must be a dict")
+        for k in ("bank", "rate", "tenure"):
+            if k not in o:
+                raise InvalidInputError(f"offer missing required key: {k}")
         e = emi(principal, o["rate"], o["tenure"])
         ti = total_interest(principal, o["rate"], o["tenure"])
         fee = o.get("processing_fee_pct", 0) * principal / 100
@@ -181,7 +259,32 @@ def eligible_amount(
     tenure_months: int,
     foir: float = 0.5,
 ) -> float:
-    """Estimate maximum eligible loan amount based on FOIR and existing obligations."""
+    """Estimate maximum eligible loan amount based on FOIR and existing obligations.
+
+    Raises:
+        InvalidInputError: For invalid inputs.
+    """
+    if not isinstance(monthly_income, (int, float)):
+        raise InvalidInputError("monthly_income must be a number")
+    if not isinstance(existing_emis, (int, float)):
+        raise InvalidInputError("existing_emis must be a number")
+    if not isinstance(foir, (int, float)):
+        raise InvalidInputError("foir must be a number")
+    if monthly_income < 0:
+        raise InvalidInputError("monthly_income cannot be negative")
+    if existing_emis < 0:
+        raise InvalidInputError("existing_emis cannot be negative")
+    if foir < 0 or foir > 1:
+        raise InvalidInputError("foir must be between 0 and 1")
+    # validate tenure/rate using same rules as EMI
+    if not isinstance(tenure_months, int):
+        raise InvalidInputError("tenure_months must be an int")
+    if tenure_months <= 0:
+        raise InvalidInputError("tenure_months must be positive")
+    if not isinstance(annual_rate, (int, float)):
+        raise InvalidInputError("annual_rate must be a number")
+    if annual_rate < 0:
+        raise InvalidInputError("annual_rate cannot be negative")
     available = monthly_income * foir - existing_emis
     if available <= 0:
         return 0.0

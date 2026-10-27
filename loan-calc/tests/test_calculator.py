@@ -4,6 +4,11 @@ from datetime import date
 import pytest
 
 from loan_calc import calculator
+from loan_calc.exceptions import (
+    InsufficientInstalmentError,
+    InvalidInputError,
+    PrepaymentError,
+)
 
 
 # ----------------------------
@@ -142,13 +147,10 @@ def test_prepayment_larger_than_remaining_balance():
     sched = calculator.amortisation_schedule(principal, annual_rate, tenure_months)
     remaining_balance = sched[prepay_month - 1]["balance"]
 
-    result = calculator.prepayment_savings(
-        principal, annual_rate, tenure_months, prepay_month, remaining_balance + 1.0
-    )
-
-    assert result["new_tenure"] == prepay_month
-    assert result["months_saved"] == tenure_months - prepay_month
-    assert result["interest_saved"] > 0
+    with pytest.raises(PrepaymentError):
+        calculator.prepayment_savings(
+            principal, annual_rate, tenure_months, prepay_month, remaining_balance + 1.0
+        )
 
 
 def test_emi_reference_check_10_lakh_9pct_240_months():
@@ -162,13 +164,13 @@ def test_emi_reference_check_10_lakh_9pct_240_months():
 
 @pytest.mark.parametrize("principal, tenure", [(0, 12), (-1000, 12), (100000, 0), (100000, -5)])
 def test_emi_rejects_non_positive_inputs(principal, tenure):
-    with pytest.raises(ValueError):
+    with pytest.raises(InvalidInputError):
         calculator.emi(principal, 9, tenure)
 
 
 def test_remaining_tenure_instalment_too_small():
     # 1% of 1,00,000 = 1,000 interest per month; 500 never repays it
-    with pytest.raises(ValueError):
+    with pytest.raises(InsufficientInstalmentError):
         calculator.remaining_tenure(100000, 12, 500)
 
 
@@ -320,3 +322,134 @@ def test_summary_defaults_start_to_today():
     s = calculator.summary(100000, 9, 12)
     assert len(s["last_emi"]) == 7 and s["last_emi"][4] == "-"
 
+
+# ----------------------------
+# 11) Validation error-path coverage (to reach 100%)
+# ----------------------------
+
+@pytest.mark.parametrize(
+    "principal, annual_rate, tenure_months, msg",
+    [
+        ("100000", 9, 12, "principal must be a number"),
+        (100000, "9", 12, "annual_rate must be a number"),
+        (100000, -1, 12, "annual_rate cannot be negative"),
+        (0, 9, 12, "principal must be positive"),
+        (-100, 9, 12, "principal must be positive"),
+    ],
+)
+def test_emi_invalid_principal_or_rate_types_and_bounds(principal, annual_rate, tenure_months, msg):
+    with pytest.raises(InvalidInputError, match=msg):
+        calculator.emi(principal, annual_rate, tenure_months)
+
+
+@pytest.mark.parametrize(
+    "tenure_months, msg",
+    [
+        (12.0, "tenure_months must be an int"),
+        ("12", "tenure_months must be an int"),
+        (0, "tenure_months must be positive"),
+        (-5, "tenure_months must be positive"),
+    ],
+)
+def test_emi_invalid_tenure_type_and_bounds(tenure_months, msg):
+    with pytest.raises(InvalidInputError, match=msg):
+        calculator.emi(100000, 9, tenure_months)
+
+
+def test_outstanding_after_months_paid_must_be_int():
+    with pytest.raises(InvalidInputError, match="months_paid must be an int"):
+        calculator.outstanding_after(100000, 12, 12, "1")
+
+
+@pytest.mark.parametrize(
+    "balance, annual_rate, instalment, msg",
+    [
+        ("100000", 12, 2000, "balance must be a number"),
+        (100000, "12", 2000, "annual_rate must be a number"),
+        (100000, -1, 2000, "annual_rate cannot be negative"),
+        (100000, 12, "2000", "instalment must be a number"),
+        (100000, 12, 0, "instalment must be positive"),
+        (100000, 12, -10, "instalment must be positive"),
+    ],
+)
+def test_remaining_tenure_validation_errors(balance, annual_rate, instalment, msg):
+    with pytest.raises(InvalidInputError, match=msg):
+        calculator.remaining_tenure(balance, annual_rate, instalment)
+
+
+@pytest.mark.parametrize(
+    "prepay_month, prepay_amount, msg",
+    [
+        ("12", 1000, "prepay_month must be an int"),
+        (0, 1000, "prepay_month must be within 1..tenure_months"),
+        (241, 1000, "prepay_month must be within 1..tenure_months"),
+        (12, "1000", "prepay_amount must be a number"),
+        (12, 0, "prepay_amount must be positive"),
+        (12, -1, "prepay_amount must be positive"),
+    ],
+)
+def test_prepayment_savings_invalid_month_or_amount(prepay_month, prepay_amount, msg):
+    with pytest.raises(PrepaymentError, match=msg):
+        calculator.prepayment_savings(1_000_000, 9, 240, prepay_month, prepay_amount)
+
+
+def test_prepayment_equal_to_remaining_balance_closes_loan():
+    principal, annual_rate, tenure_months, prepay_month = 1_000_000, 9, 240, 12
+    sched = calculator.amortisation_schedule(principal, annual_rate, tenure_months)
+    remaining_balance = sched[prepay_month - 1]["balance"]
+
+    result = calculator.prepayment_savings(
+        principal, annual_rate, tenure_months, prepay_month, remaining_balance
+    )
+    assert result["new_tenure"] == prepay_month
+
+
+@pytest.mark.parametrize(
+    "principal, offers, msg",
+    [
+        ("500000", [{"bank": "A", "rate": 9, "tenure": 12}], "principal must be a number"),
+        (-1, [{"bank": "A", "rate": 9, "tenure": 12}], "principal must be positive"),
+        (500000, "not-a-list", "offers must be a list of dicts"),
+    ],
+)
+def test_compare_offers_invalid_top_level_inputs(principal, offers, msg):
+    with pytest.raises(InvalidInputError, match=msg):
+        calculator.compare_offers(principal, offers)
+
+
+@pytest.mark.parametrize(
+    "offers, msg",
+    [
+        ([1], "each offer must be a dict"),
+        ([{"bank": "A", "tenure": 12}], "offer missing required key: rate"),
+        ([{"rate": 9, "tenure": 12}], "offer missing required key: bank"),
+        ([{"bank": "A", "rate": 9}], "offer missing required key: tenure"),
+    ],
+)
+def test_compare_offers_invalid_offer_items(offers, msg):
+    with pytest.raises(InvalidInputError, match=msg):
+        calculator.compare_offers(500000, offers)
+
+
+@pytest.mark.parametrize(
+    "monthly_income, existing_emis, annual_rate, tenure_months, foir, msg",
+    [
+        ("100000", 10000, 9, 240, 0.5, "monthly_income must be a number"),
+        (100000, "10000", 9, 240, 0.5, "existing_emis must be a number"),
+        (100000, 10000, 9, 240, "0.5", "foir must be a number"),
+        (-1, 0, 9, 240, 0.5, "monthly_income cannot be negative"),
+        (100000, -1, 9, 240, 0.5, "existing_emis cannot be negative"),
+        (100000, 0, -1, 240, 0.5, "annual_rate cannot be negative"),
+        (100000, 0, "9", 240, 0.5, "annual_rate must be a number"),
+        (100000, 0, 9, "240", 0.5, "tenure_months must be an int"),
+        (100000, 0, 9, 0, 0.5, "tenure_months must be positive"),
+        (100000, 0, 9, -1, 0.5, "tenure_months must be positive"),
+        (100000, 0, 9, 240, -0.1, "foir must be between 0 and 1"),
+        (100000, 0, 9, 240, 1.1, "foir must be between 0 and 1"),
+    ],
+)
+def test_eligible_amount_validation_errors(
+    monthly_income, existing_emis, annual_rate, tenure_months, foir, msg
+):
+    with pytest.raises(InvalidInputError, match=msg):
+        calculator.eligible_amount(monthly_income, existing_emis, annual_rate, tenure_months, foir)
